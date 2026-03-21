@@ -1,4 +1,17 @@
-from fastapi import FASTAPI
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+app = FastAPI()
 
-app = FASTAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+@app.get("/")
+def home():
+    return {
+        "message":"welcome to home screen"
+    }
