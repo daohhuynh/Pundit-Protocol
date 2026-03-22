@@ -1,5 +1,4 @@
 from uagents import Model
-from typing import List, Optional
 
 
 class DebateRequest(Model):
@@ -10,10 +9,10 @@ class DebateRequest(Model):
 class Argument(Model):
     speaker: str
     text: str
-    source_link: Optional[str] = None
+    source_link: str | None = None
 
 
 class DebateSummary(Model):
     topic: str
-    arguments: List[Argument]
+    arguments: list[Argument]
     conclusion: str
