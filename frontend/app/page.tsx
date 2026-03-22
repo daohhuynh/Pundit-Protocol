@@ -21,6 +21,8 @@ interface Agent {
 interface Source {
   title: string;
   url: string;
+  source?: string; 
+  snippet?: string;
 }
 
 interface QueuedMessage {
@@ -663,12 +665,33 @@ export default function PunditProtocolPage() {
 
         {/* Main Content Area */}
         <section className="w-full max-w-3xl flex flex-col gap-6 px-4 pb-24">
-          {currentAct >= 1 && (
+        {currentAct >= 1 && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-700 w-full bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-6 flex flex-col gap-3">
               <span className="font-mono text-[10px] font-bold uppercase text-blue-400 tracking-widest">Briefing & Spin-Up</span>
-              <p className="text-md text-zinc-300 leading-relaxed min-h-[3rem]">
-              <Typewriter text={moderatorBrief} speedMs={BASE_TYPE_SPEED / speedMultiplier} hasError={backendError} onComplete={() => { isBriefingDoneRef.current = true; }} />
+              <p className="text-md text-zinc-300 leading-relaxed">
+                <Typewriter text={moderatorBrief} speedMs={BASE_TYPE_SPEED / speedMultiplier} hasError={backendError} onComplete={() => { isBriefingDoneRef.current = true; }} />
               </p>
+
+              {/* NEW: Clean, structured UI for the news sources */}
+              {citedSources.length > 0 && isBriefingDoneRef.current && (
+                <div className="flex flex-col gap-2.5 mt-2 mb-2 pt-4 border-t border-zinc-800/50">
+                  {citedSources.slice(0, 3).map((src, i) => (
+                    <div 
+                      key={i} 
+                      className="flex items-center gap-3 animate-in fade-in slide-in-from-left-4 text-sm" 
+                      style={{ animationDelay: `${i * 150}ms`, animationFillMode: "both" }}
+                    >
+                      <span className="text-[10px] font-mono px-2 py-0.5 bg-blue-900/20 text-blue-400 border border-blue-900/50 rounded uppercase shrink-0 shadow-[0_0_10px_rgba(59,130,246,0.1)]">
+                        {src.source}
+                      </span>
+                      <a href={src.url} target="_blank" rel="noopener noreferrer" className="text-zinc-400 truncate w-full hover:text-blue-300 transition-colors">
+                        {src.title}
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <AgentTelemetry isActive={isAnalyzing} speedMultiplier={speedMultiplier} hasError={backendError} />
             </div>
           )}
