@@ -39,26 +39,40 @@ class ChaosEngine:
 
     def _generate_chaos(self, context, persona, temp):
         """Step 3: Inject Bias"""
+        if not isinstance(context, dict) or "news" not in context:
+            raise ValueError("Invalid context: 'news' key is missing or context is not a dictionary")
+
+        persona = persona.replace("\n", " ").strip()
+        news_context = context.get("news", "").replace("\n", " ").strip()
         prompt = f"""
         PERSONA: {persona}
-        NEWS CONTEXT: {context['news']}
+        NEWS CONTEXT: {news_context}
         TASK: Synthesize this into a radical, biased 'Situation Report'. 
         Be extreme. Ignore neutrality. Use the facts provided to fuel a one-sided, high-energy take.
         """
         
         if self.provider == "gemini":
+            if not hasattr(self, "gemini_model"):
+                raise RuntimeError("Gemini model is not initialized")
             response = self.gemini_model.generate_content(
                 prompt, 
                 generation_config=genai.types.GenerationConfig(temperature=temp)
             )
+            if not hasattr(response, "text"):
+                raise RuntimeError("Gemini response is missing 'text'")
             return response.text
-        else:
+        elif self.provider == "openai":
+            if not hasattr(self, "openai_client"):
+                raise RuntimeError("OpenAI client is not initialized")
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o", 
-                messages=[{"role": "user", "content": prompt}], 
-                temperature=temp
+                messages=[{"role": "user", "content": prompt}]
             )
+            if not response.choices or not response.choices[0].message.content:
+                raise RuntimeError("OpenAI response is missing content")
             return response.choices[0].message.content
+        else:
+            raise ValueError(f"Unsupported provider: {self.provider}")
 
     def _govern(self, content):
         """Step 4: Safety Filter"""
