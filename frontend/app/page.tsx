@@ -25,10 +25,6 @@ interface Source {
 
 // --- Timing Engine ---
 const BASE_TYPE_SPEED = 15;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-// WPM is now passed dynamically
-const calcReadTime = (text: string, multiplier: number, wpm: number) => ((text.split(" ").length / wpm) * 60000) / multiplier;
-const calcTypeTime = (text: string, multiplier: number) => (text.length * BASE_TYPE_SPEED) / multiplier;
 
 // --- Sub-Components ---
 const Typewriter = ({ text, speedMs }: { text: string; speedMs: number }) => {
@@ -60,7 +56,90 @@ const Typewriter = ({ text, speedMs }: { text: string; speedMs: number }) => {
   return <span>{displayed}</span>;
 };
 
+const AgentTelemetry = ({ isActive, speedMultiplier, hasError }: { isActive: boolean; speedMultiplier: number; hasError: boolean }) => {
+  const [logs, setLogs] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!isActive) return;
+
+    if (hasError) {
+      setLogs((prev) => {
+        const safe = prev.filter(Boolean);
+        if (!safe.includes("ERR: WebSocket connection failed.")) {
+          return [...safe, "ERR: WebSocket connection failed.", "SYSTEM: Swarm initialization halted."];
+        }
+        return safe;
+      });
+      return;
+    }
+
+    const sequence = [
+      "INIT protocol::fetch_ai_swarm",
+      "SPAWN_NODE: Jacobin (Bias: Left) ... OK",
+      "SPAWN_NODE: WSJ (Bias: Center-Right) ... OK",
+      "SPAWN_NODE: Fox (Bias: Right) ... OK",
+      "SPAWN_NODE: Wired (Domain: Tech) ... OK",
+      "CONNECTING wss://fetch.ai/orchestrator ... 200 OK",
+      "EXECUTE fetch_papers() -> Parsing 8,402 external links...",
+      "WARN: Rate limit threshold near on Target API. Rotating proxies...",
+      "VECTORIZING 4,209 semantic memory chunks...",
+      "ALIGNING multi-agent consensus caches...",
+      "SYSTEM: Swarm alignment complete. Awaiting moderator."
+    ];
+
+    let i = 0;
+    setLogs([]);
+    const interval = setInterval(() => {
+      if (i < sequence.length) {
+        setLogs((prev) => {
+          const newLogs = [...prev.slice(-4), sequence[i]];
+          return newLogs.filter(Boolean);
+        });
+        i++;
+      } else {
+        clearInterval(interval);
+      }
+    }, 400 / speedMultiplier);
+
+    return () => clearInterval(interval);
+  }, [isActive, speedMultiplier, hasError]);
+
+  return (
+    <div className={`w-full bg-[#0a0a0a] border rounded-xl p-4 font-mono text-[10px] sm:text-xs h-36 overflow-hidden relative shadow-[inset_0_0_20px_rgba(0,0,0,0.8)] mt-4 transition-colors duration-300 ${hasError ? 'border-red-900/50' : 'border-zinc-800/80'}`}>
+      <div className="absolute top-3 right-4 flex items-center gap-2">
+        <span className="relative flex h-2 w-2">
+          {isActive && !hasError && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>}
+          <span className={`relative inline-flex rounded-full h-2 w-2 ${hasError ? 'bg-red-500' : isActive ? 'bg-indigo-500' : 'bg-zinc-600'}`}></span>
+        </span>
+        <span className="text-zinc-500 font-bold uppercase tracking-widest text-[8px]">Agent Telemetry</span>
+      </div>
+      <div className="flex flex-col justify-end h-full pb-1">
+        {logs.map((log, idx) => {
+          if (!log) return null;
+          return (
+            <div key={idx} className="flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-200 mt-1.5">
+              <span className="text-zinc-600 shrink-0">[{new Date().toISOString().split('T')[1].slice(0, 11)}]</span>
+              <span className={log.includes("WARN") ? "text-amber-400" : log.includes("ERR") ? "text-red-400" : log.includes("OK") ? "text-emerald-400" : log.includes("SYSTEM") ? "text-indigo-400" : "text-zinc-300"}>
+                {log}
+              </span>
+            </div>
+          );
+        })}
+        {isActive && !hasError && (
+          <div className="w-2 h-3 bg-zinc-400 animate-pulse mt-2 ml-24" />
+        )}
+      </div>
+    </div>
+  );
+};
+
 // --- Config ---
+const TRENDING_TOPICS = [
+  "AGI Timelines",
+  "Federal Reserve Rates",
+  "TikTok Divestment"
+];
+
 const agentMetadata: Agent[] = [
   { name: "Jacobin", color: "border-rose-500", bg: "bg-rose-900/20", text: "text-rose-400", logo: "https://logo.clearbit.com/jacobin.com" },
   { name: "WSJ", color: "border-blue-500", bg: "bg-blue-900/20", text: "text-blue-400", logo: "https://logo.clearbit.com/wsj.com" },
@@ -74,16 +153,69 @@ const unknownAgent: Agent = { name: "Independent", color: "border-zinc-500", bg:
 export default function PunditProtocolPage() {
   // --- UI & Content State ---
   const [topic, setTopic] = useState("");
+  const [inputError, setInputError] = useState("");
+  const [backendError, setBackendError] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [currentAct, setCurrentAct] = useState<number>(0);
-  const [liveSource, setLiveSource] = useState(true);
-  const [speedMode, setSpeedMode] = useState<"realtime" | "demo">("realtime");  
+  const [liveSource, setLiveSource] = useState(true); // True = News API, False = Backend Chaos Mock
+  const [speedMode, setSpeedMode] = useState<"realtime" | "demo">("realtime");
   const speedMultiplier = speedMode === "demo" ? 10 : 1;
 
   // --- Settings State ---
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [wpm, setWpm] = useState<number>(250);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [showChat, setShowChat] = useState(true);
+  
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Load Settings
+  useEffect(() => {
+    const savedWpm = localStorage.getItem("pundit_wpm");
+    const savedTheme = localStorage.getItem("pundit_theme");
+    if (savedWpm) setWpm(Number(savedWpm));
+    if (savedTheme === "light" || savedTheme === "dark") setTheme(savedTheme);
+  }, []);
+
+  // --- Keyboard Shortcuts Engine ---
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isInputFocused = document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
+
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      
+      if (e.key === 'Escape') {
+        setIsSettingsOpen((prev) => !prev);
+      }
+
+      if (e.key === 'Enter' && !isInputFocused) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+
+      if (e.key.toLowerCase() === 'f' && !isInputFocused) {
+        e.preventDefault();
+        setShowChat((prev) => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleWpmChange = (newWpm: number) => {
+    setWpm(newWpm);
+    localStorage.setItem("pundit_wpm", newWpm.toString());
+  };
+
+  const handleThemeChange = (newTheme: "dark" | "light") => {
+    setTheme(newTheme);
+    localStorage.setItem("pundit_theme", newTheme);
+  };
 
   // --- Data State ---
   const [moderatorBrief, setModeratorBrief] = useState("");
@@ -91,9 +223,6 @@ export default function PunditProtocolPage() {
   const [moderatorSynthesis, setModeratorSynthesis] = useState("");
   const [citedSources, setCitedSources] = useState<Source[]>([]);
   const [activeTypist, setActiveTypist] = useState<number | null>(null);
-  const [showChat, setShowChat] = useState(true);
-  
-  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -105,11 +234,23 @@ export default function PunditProtocolPage() {
     window.location.reload();
   };
 
-  // --- Hardcoded Async Mock Engine ---
-  const handleInitiateAnalysis = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!topic.trim()) return;
+  // --- Core Execution Logic (100% Backend Connected) ---
+  const triggerAnalysis = (query: string) => {
+    const cleanTopic = query.trim();
+    if (!cleanTopic) return;
 
+    if (cleanTopic.length > 120) {
+      setInputError("Query too long. Keep it under 120 characters.");
+      return;
+    }
+    if (/[<>{}|\\]/.test(cleanTopic)) {
+      setInputError("Invalid input: Special characters (<, >, {, }, \\, |) are locked out.");
+      return;
+    }
+    
+    setTopic(cleanTopic);
+    setInputError(""); 
+    setBackendError(false); 
     setIsAnalyzing(true);
     setCurrentAct(1); 
     setMessages([]);
@@ -117,54 +258,54 @@ export default function PunditProtocolPage() {
     setActiveTypist(null);
     setShowChat(true);
 
-    const runDebateQueue = async () => {
-      // Act 1: Briefing
-      const briefText = "The topic of AI regulation has sparked global debate. Lawmakers weigh innovation velocity against existential and economic risks.";
-      setModeratorBrief(briefText);
-      await sleep(calcTypeTime(briefText, speedMultiplier) + (500 / speedMultiplier));
+    // Dynamic routing: Tells the backend whether to use real tools or run the chaos mock
+    const backendMode = liveSource ? "news" : "chaos";
+    const ws = new WebSocket(`ws://localhost:8000/ws/debate?topic=${encodeURIComponent(cleanTopic)}&mode=${backendMode}`);
 
-      // Act 2: Debate
-      setCurrentAct(2);
-      await sleep(600 / speedMultiplier); 
-
-      const debateFlow = [
-        { agentIdx: 3, content: "Silicon Valley asserts that heavy-handed oversight will stifle open-source development and cede geopolitical advantage." },
-        { agentIdx: 0, content: "That is a corporate shield. Unregulated AI primarily threatens labor markets and centralizes unprecedented power in mega-caps." },
-        { agentIdx: 1, content: "We need a scalpel, not a sledgehammer. Sector-specific liability frameworks protect markets better than broad sweeping mandates." },
-        { agentIdx: 2, content: "Federal bureaucracies are too slow to regulate this anyway. We shouldn't be creating new three-letter agencies." },
-        { agentIdx: 4, content: "EU markets are already deploying the AI Act. Global regulatory divergence is becoming the primary operational friction for enterprise." }
-      ];
-
-      for (const msg of debateFlow) {
-        setActiveTypist(msg.agentIdx);
-        const typingDelay = Math.min(calcTypeTime(msg.content, speedMultiplier) * 0.4, 2500 / speedMultiplier);
-        await sleep(typingDelay);
-
-        setActiveTypist(null);
-        setMessages((prev) => [...prev, {
-          agentIdx: msg.agentIdx,
-          content: msg.content,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        }]);
-
-        // Utilizing the dynamic WPM state here
-        await sleep(calcReadTime(msg.content, speedMultiplier, wpm));
-      }
-
-      // Act 3: Synthesis
-      const synthText = "The ecosystem remains highly fragmented. While tech advocates push for agile frameworks, labor and international entities demand stringent safeguards.";
-      setModeratorSynthesis(synthText);
-      setCitedSources([
-        { title: "Wired: The Open Source AI Debate", url: "#" },
-        { title: "Reuters: EU AI Act Implementation", url: "#" }
-      ]);
-      
-      setCurrentAct(3);
-      setIsAnalyzing(false); 
-      setShowChat(false); // <--- BOOM. Auto-collapse fixed.
+    ws.onopen = () => {
+      setModeratorBrief(`Sourcing live context for: ${cleanTopic}...`);
     };
 
-    runDebateQueue();
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      switch (data.type) {
+        case "brief": 
+          setModeratorBrief(data.content); 
+          break;
+        case "typing": 
+          setCurrentAct(2); 
+          setActiveTypist(data.agentIdx); 
+          break;
+        case "message":
+          setActiveTypist(null);
+          setMessages((prev) => [...prev, {
+            agentIdx: data.agentIdx, 
+            content: data.content,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }]);
+          break;
+        case "synthesis":
+          setCurrentAct(3); 
+          setModeratorSynthesis(data.content);
+          if (data.sources) setCitedSources(data.sources);
+          setIsAnalyzing(false); 
+          setShowChat(false); 
+          ws.close();
+          break;
+      }
+    };
+
+    ws.onerror = (err) => {
+      console.error("WebSocket Error:", err);
+      setBackendError(true); 
+      setModeratorBrief("Network Error: Could not connect to the Backend Orchestrator.");
+      setIsAnalyzing(false);
+    };
+  };
+
+  const handleFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    triggerAnalysis(topic);
   };
 
   function renderAvatar(agent: Agent) {
@@ -192,26 +333,24 @@ export default function PunditProtocolPage() {
               </div>
 
               <div className="flex flex-col gap-5">
-                {/* WPM Input */}
                 <div className="flex flex-col gap-2">
                   <label className="text-xs font-bold uppercase tracking-wider text-zinc-400">Reading Speed (WPM)</label>
                   <input 
                     type="number" 
                     value={wpm} 
-                    onChange={(e) => setWpm(Number(e.target.value) || 250)}
+                    onChange={(e) => handleWpmChange(Number(e.target.value) || 250)}
                     min="50"
                     max="1000"
                     className="bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2.5 text-zinc-100 outline-none focus:border-indigo-500 transition-colors" 
                   />
-                  <p className="text-[10px] text-zinc-500">Determines agent reading pause duration.</p>
+                  <p className="text-[10px] text-zinc-500">Note: Live mode pacing is driven by server response time.</p>
                 </div>
 
-                {/* Theme Dropdown */}
                 <div className="flex flex-col gap-2">
                   <label className="text-xs font-bold uppercase tracking-wider text-zinc-400">Theme</label>
                   <select 
                     value={theme} 
-                    onChange={(e) => setTheme(e.target.value as "dark" | "light")}
+                    onChange={(e) => handleThemeChange(e.target.value as "dark" | "light")}
                     className="bg-zinc-950 border border-zinc-700 rounded-lg px-3 py-2.5 text-zinc-100 outline-none focus:border-indigo-500 appearance-none cursor-pointer"
                   >
                     <option value="dark">Dark Mode (Recommended)</option>
@@ -219,7 +358,6 @@ export default function PunditProtocolPage() {
                   </select>
                 </div>
 
-                {/* Cache Clearer */}
                 <button 
                   onClick={handleClearCache}
                   className="mt-2 w-full py-2.5 rounded-xl bg-red-900/20 text-red-400 border border-red-900/50 hover:bg-red-900/40 hover:text-red-300 font-medium transition-all"
@@ -234,9 +372,10 @@ export default function PunditProtocolPage() {
         {/* Settings Cog Trigger */}
         <div className="absolute top-6 right-6 z-50">
           <button 
-            onClick={() => setIsSettingsOpen(true)}
-            className="p-2 rounded-xl border border-transparent hover:border-zinc-800 hover:bg-zinc-900/50 transition-all text-zinc-500 hover:text-zinc-200"
+            onClick={() => setIsSettingsOpen((prev) => !prev)}
+            className="p-2 rounded-xl border border-transparent hover:border-zinc-800 hover:bg-zinc-900/50 transition-all text-zinc-500 hover:text-zinc-200 flex gap-2 items-center"
           >
+            <span className="text-[10px] font-mono tracking-widest hidden sm:block opacity-50">ESC</span>
             <FiSettings size={20} />
           </button>
         </div>
@@ -245,42 +384,69 @@ export default function PunditProtocolPage() {
         <section className={`w-full max-w-2xl flex flex-col items-center px-4 transition-all duration-1000 ease-in-out
           ${currentAct === 0 ? "flex-1 justify-center pb-24" : "pt-12 pb-8"}`}>
           
-          <h1 className={`text-4xl md:text-5xl font-semibold mb-10 tracking-tight transition-all duration-700
+          <h1 className={`text-4xl md:text-5xl font-semibold mb-6 tracking-tight transition-all duration-700
             ${currentAct === 0 ? "opacity-100 scale-100" : "opacity-0 scale-95 h-0 overflow-hidden"}`}>
             Out of the loop?
           </h1>
 
-          <form className={`w-full flex gap-2 rounded-2xl shadow-2xl border px-3 py-2.5 backdrop-blur-md relative z-10 transition-colors
-            ${!liveSource ? "border-red-900/50 bg-red-950/10" : "border-zinc-800 bg-zinc-900/40"}`} 
-            onSubmit={handleInitiateAnalysis}>
-            <div className="flex items-center pl-2 text-zinc-500">
-              <FiSearch size={20} />
-            </div>
-            <input
-              className="flex-1 bg-transparent outline-none text-lg px-2 text-zinc-100 placeholder-zinc-600"
-              placeholder="Ask away..."
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              disabled={isAnalyzing}
-            />
-            <button
-              type="submit"
-              disabled={isAnalyzing || !topic.trim()}
-              className={`flex items-center justify-center w-28 h-11 rounded-xl font-medium transition-all transform active:scale-95
-                ${!liveSource ? "bg-red-600 hover:bg-red-500 shadow-[0_0_15px_rgba(220,38,38,0.3)]" : "bg-indigo-600 hover:bg-indigo-500"} 
-                text-white disabled:opacity-50`}
-            >
-              {isAnalyzing ? (
-                <div className="flex gap-1.5 items-center justify-center">
-                  <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce [animation-delay:-0.3s]" />
-                  <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce [animation-delay:-0.15s]" />
-                  <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce" />
-                </div>
-              ) : (
-                "Debate"
-              )}
-            </button>
-          </form>
+          {/* Quick-Start Pills */}
+          <div className={`flex flex-wrap justify-center gap-3 mb-8 transition-all duration-700 ${currentAct === 0 ? "opacity-100" : "opacity-0 h-0 overflow-hidden mb-0"}`}>
+            {TRENDING_TOPICS.map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => triggerAnalysis(t)}
+                disabled={isAnalyzing}
+                className="group relative px-5 py-2 rounded-full border border-zinc-800 bg-gradient-to-b from-zinc-800/40 to-zinc-900/40 text-xs font-medium text-zinc-400 backdrop-blur-md transition-all duration-300 hover:text-white hover:border-indigo-500/50 hover:shadow-[0_0_20px_rgba(99,102,241,0.15)] hover:-translate-y-0.5 active:scale-95 disabled:opacity-50 overflow-hidden"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/0 via-indigo-500/10 to-indigo-500/0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 rounded-full" />
+                <span className="relative z-10">{t}</span>
+              </button>
+            ))}
+          </div>
+
+          <div className="w-full flex flex-col gap-2 relative z-10">
+            <form className={`w-full flex gap-2 rounded-2xl shadow-2xl border px-3 py-2.5 backdrop-blur-md transition-all duration-300
+              ${inputError ? "border-red-500 bg-red-950/20" : !liveSource ? "border-red-900/50 bg-red-950/10" : "border-zinc-800 bg-zinc-900/40"}`} 
+              onSubmit={handleFormSubmit}>
+              <div className={`flex items-center pl-2 transition-colors ${inputError ? "text-red-400" : "text-zinc-500"}`}>
+                <FiSearch size={20} />
+              </div>
+              <input
+                ref={searchInputRef}
+                className={`flex-1 bg-transparent outline-none text-lg px-2 placeholder-zinc-600 transition-colors ${inputError ? "text-red-200" : "text-zinc-100"}`}
+                placeholder="Ask away... (Press Enter)"
+                value={topic}
+                onChange={(e) => {
+                  setTopic(e.target.value);
+                  if (inputError) setInputError(""); 
+                }}
+                disabled={isAnalyzing}
+              />
+              <button
+                type="submit"
+                disabled={isAnalyzing || !topic.trim()}
+                className={`flex items-center justify-center w-28 h-11 rounded-xl font-medium transition-all transform active:scale-95
+                  ${inputError ? "bg-red-600 hover:bg-red-500 shadow-[0_0_15px_rgba(220,38,38,0.3)]" : !liveSource ? "bg-red-600 hover:bg-red-500 shadow-[0_0_15px_rgba(220,38,38,0.3)]" : "bg-indigo-600 hover:bg-indigo-500"} 
+                  text-white disabled:opacity-50`}
+              >
+                {isAnalyzing ? (
+                  <div className="flex gap-1.5 items-center justify-center">
+                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce [animation-delay:-0.3s]" />
+                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce [animation-delay:-0.15s]" />
+                    <div className="w-1.5 h-1.5 bg-white rounded-full animate-bounce" />
+                  </div>
+                ) : (
+                  "Debate"
+                )}
+              </button>
+            </form>
+            {inputError && (
+              <span className="text-red-400 text-xs font-medium pl-4 animate-in fade-in slide-in-from-top-1">
+                {inputError}
+              </span>
+            )}
+          </div>
 
           {/* Toggles */}
           <div className="flex items-center gap-6 mt-6 justify-center">
@@ -320,30 +486,31 @@ export default function PunditProtocolPage() {
         <section className="w-full max-w-3xl flex flex-col gap-6 px-4 pb-24">
           {currentAct >= 1 && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-700 w-full bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-6 flex flex-col gap-3">
-              <span className="font-mono text-[10px] font-bold uppercase text-blue-400 tracking-widest">Briefing</span>
+              <span className="font-mono text-[10px] font-bold uppercase text-blue-400 tracking-widest">Briefing & Spin-Up</span>
               <p className="text-md text-zinc-300 leading-relaxed min-h-[3rem]">
                 <Typewriter text={moderatorBrief} speedMs={BASE_TYPE_SPEED / speedMultiplier} />
               </p>
+              
+              <AgentTelemetry isActive={currentAct === 1} speedMultiplier={speedMultiplier} hasError={backendError} />
             </div>
           )}
 
           {currentAct >= 2 && (
             <div className="animate-in fade-in slide-in-from-bottom-8 duration-700 w-full">
-              {/* Outer container transitions height smoothly */}
-              <div className={`w-full rounded-2xl bg-zinc-950/50 border border-zinc-800 shadow-xl relative flex flex-col overflow-hidden transition-all duration-500 ease-in-out ${showChat ? "h-[32rem]" : "h-14"}`}>
+              <div className={`w-full rounded-2xl bg-zinc-950/50 border border-zinc-800 shadow-xl relative flex flex-col overflow-hidden transition-all duration-500 ease-in-out ${showChat ? "max-h-[60vh] h-[32rem]" : "h-14"}`}>
                 
-                {/* Red Debate Header (Locked to h-14) */}
-                <div className="flex items-center px-6 h-14 border-b border-zinc-900 bg-zinc-950/80 z-10 shrink-0">
+                <div className="flex items-center px-6 h-14 border-b border-zinc-900 bg-zinc-950/80 z-10 shrink-0 cursor-pointer" onClick={() => setShowChat((v) => !v)}>
                   <span className="font-mono text-[10px] font-bold uppercase text-red-400 tracking-widest">Debate</span>
-                  <button
-                    className={`ml-auto px-3 py-1 text-xs rounded-lg transition border border-zinc-800 font-medium ${showChat ? "bg-zinc-800 text-zinc-300 hover:bg-zinc-700" : "bg-zinc-900 text-zinc-500 hover:bg-zinc-800"}`}
-                    onClick={() => setShowChat((v) => !v)}
-                  >
-                    {showChat ? "Collapse" : "Expand"}
-                  </button>
+                  <div className="ml-auto flex items-center gap-3">
+                    <span className="text-[10px] font-mono tracking-widest hidden sm:block text-zinc-500">Press F</span>
+                    <button
+                      className={`px-3 py-1 text-xs rounded-lg transition border border-zinc-800 font-medium ${showChat ? "bg-zinc-800 text-zinc-300 hover:bg-zinc-700" : "bg-zinc-900 text-zinc-500 hover:bg-zinc-800"}`}
+                    >
+                      {showChat ? "Collapse" : "Expand"}
+                    </button>
+                  </div>
                 </div>
 
-                {/* Inner Content Area */}
                 <div className={`transition-opacity duration-500 flex-1 overflow-hidden ${showChat ? "opacity-100" : "opacity-0"}`}>
                   <div className="h-full overflow-y-auto px-4 pb-5 pt-6 font-mono scrollbar-hide">
                     <div className="flex flex-col justify-end min-h-full">
