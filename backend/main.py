@@ -13,22 +13,45 @@ import json
 import os
 import queue
 import threading
+import sys
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
+
+# Guard against cosmpy adding its protos dir to sys.path (breaks google.protobuf imports).
+_COSMPY_PROTOS_SUFFIX = os.path.join("cosmpy", "protos")
+sys.path = [p for p in sys.path if not os.path.normpath(p).endswith(_COSMPY_PROTOS_SUFFIX)]
+
 from uagents.communication import send_message
 
-from .agents.moderator import moderator, debate_queue
-from .agents.pundit import create_bureau
-from .agents.messages import DebateBrief
-from .agents.personas import DEFAULT_SOURCE_SLOTS
-from .schemas import DebateStartBody, DebateStartResponse
-from .services.briefing import (
-    articles_to_json,
-    build_overview_from_articles,
-    fetch_articles_for_topic,
-)
+try:
+    from .agents.moderator import moderator, debate_queue
+    from .agents.pundit import create_bureau
+    from .agents.messages import DebateBrief
+    from .agents.personas import DEFAULT_SOURCE_SLOTS
+    from .agents.local_resolver import LocalResolver
+    from .schemas import DebateStartBody, DebateStartResponse
+    from .services.briefing import (
+        articles_to_json,
+        build_overview_from_articles,
+        fetch_articles_for_topic,
+    )
+except ImportError:
+    # Allow running from backend/ with: uvicorn main:app
+    from agents.moderator import moderator, debate_queue
+    from agents.pundit import create_bureau
+    from agents.messages import DebateBrief
+    from agents.personas import DEFAULT_SOURCE_SLOTS
+    from agents.local_resolver import LocalResolver
+    from schemas import DebateStartBody, DebateStartResponse
+    from services.briefing import (
+        articles_to_json,
+        build_overview_from_articles,
+        fetch_articles_for_topic,
+    )
+
+LOCAL_RESOLVER = LocalResolver(default_endpoint="http://127.0.0.1:8000/submit")
 
 DEBATE_GET_TIMEOUT = float(os.getenv("DEBATE_QUEUE_TIMEOUT", "120"))
 
@@ -111,7 +134,7 @@ def startup_event():
 async def start_debate(body: DebateStartBody):
     await _drain_debate_queue()
     brief, overview, articles = await asyncio.to_thread(_build_debate_brief, body)
-    await send_message(moderator.address, brief)
+    await send_message(moderator.address, brief, resolver=LOCAL_RESOLVER)
     return DebateStartResponse(
         overview=overview,
         sources=articles,
@@ -139,7 +162,7 @@ async def websocket_debate(websocket: WebSocket):
 
             await _drain_debate_queue()
             brief, _, _ = await asyncio.to_thread(_build_debate_brief, body)
-            await send_message(moderator.address, brief)
+            await send_message(moderator.address, brief, resolver=LOCAL_RESOLVER)
 
             while True:
                 try:

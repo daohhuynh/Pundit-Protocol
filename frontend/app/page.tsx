@@ -23,8 +23,14 @@ interface Source {
   url: string;
 }
 
+interface QueuedMessage {
+  agentIdx: number;
+  content: string;
+}
+
 // --- Timing Engine ---
 const BASE_TYPE_SPEED = 15;
+const MESSAGE_PREVIEW_CHARS = 220;
 
 // --- Sub-Components ---
 const Typewriter = ({ text, speedMs }: { text: string; speedMs: number }) => {
@@ -141,11 +147,9 @@ const TRENDING_TOPICS = [
 ];
 
 const agentMetadata: Agent[] = [
-  { name: "Jacobin", color: "border-rose-500", bg: "bg-rose-900/20", text: "text-rose-400", logo: "https://logo.clearbit.com/jacobin.com" },
-  { name: "WSJ", color: "border-blue-500", bg: "bg-blue-900/20", text: "text-blue-400", logo: "https://logo.clearbit.com/wsj.com" },
-  { name: "Fox", color: "border-orange-500", bg: "bg-orange-900/20", text: "text-orange-400", logo: "https://logo.clearbit.com/foxnews.com" },
-  { name: "Wired", color: "border-teal-500", bg: "bg-teal-900/20", text: "text-teal-400", logo: "https://logo.clearbit.com/wired.com" },
-  { name: "Reuters", color: "border-slate-400", bg: "bg-slate-800/30", text: "text-slate-300", logo: "https://logo.clearbit.com/reuters.com" },
+  { name: "The Contrarian", color: "border-rose-500", bg: "bg-rose-900/20", text: "text-rose-400", logo: null, initials: "C" },
+  { name: "The Hype Man", color: "border-blue-500", bg: "bg-blue-900/20", text: "text-blue-400", logo: null, initials: "H" },
+  { name: "The Materialist", color: "border-emerald-500", bg: "bg-emerald-900/20", text: "text-emerald-400", logo: null, initials: "M" },
 ];
 
 const unknownAgent: Agent = { name: "Independent", color: "border-zinc-500", bg: "bg-zinc-800/30", text: "text-zinc-300", logo: null, initials: "IND" };
@@ -166,9 +170,15 @@ export default function PunditProtocolPage() {
   const [wpm, setWpm] = useState<number>(250);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [showChat, setShowChat] = useState(true);
+  const [expandedMessages, setExpandedMessages] = useState<Record<number, boolean>>({});
   
   const searchInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const queueRef = useRef<QueuedMessage[]>([]);
+  const processingRef = useRef(false);
+  const pendingSummaryRef = useRef<{ conclusion: string; sources?: Source[] } | null>(null);
+  const roundBucketsRef = useRef<Record<number, Record<number, QueuedMessage>>>({});
+  const roundTimersRef = useRef<Record<number, number>>({});
 
   // Load Settings
   useEffect(() => {
@@ -228,6 +238,12 @@ export default function PunditProtocolPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [messages, activeTypist]);
 
+  useEffect(() => {
+    return () => {
+      Object.values(roundTimersRef.current).forEach((id) => window.clearTimeout(id));
+    };
+  }, []);
+
   const handleClearCache = () => {
     localStorage.clear();
     sessionStorage.clear();
@@ -257,40 +273,145 @@ export default function PunditProtocolPage() {
     setCitedSources([]);
     setActiveTypist(null);
     setShowChat(true);
+    setExpandedMessages({});
+    queueRef.current = [];
+    processingRef.current = false;
+    pendingSummaryRef.current = null;
+    roundBucketsRef.current = {};
+    Object.values(roundTimersRef.current).forEach((id) => window.clearTimeout(id));
+    roundTimersRef.current = {};
 
-    // Dynamic routing: Tells the backend whether to use real tools or run the chaos mock
-    const backendMode = liveSource ? "news" : "chaos";
-    const ws = new WebSocket(`ws://localhost:8000/ws/debate?topic=${encodeURIComponent(cleanTopic)}&mode=${backendMode}`);
+    const ws = new WebSocket(`ws://localhost:8080/ws/debate`);
+
+    const speakerMap: Record<string, number> = {
+      "The_Contrarian": 0,
+      "The_Hype_Man": 1,
+      "The_Materialist": 2,
+    };
+
+    const enqueueRound = (round: number, agentIdx: number, content: string) => {
+      const buckets = roundBucketsRef.current;
+      const bucket = buckets[round] || {};
+      bucket[agentIdx] = { agentIdx, content };
+      buckets[round] = bucket;
+
+      const expected = agentMetadata.length;
+      if (Object.keys(bucket).length >= expected) {
+        flushRound(round);
+        return;
+      }
+
+      const existingTimer = roundTimersRef.current[round];
+      if (existingTimer) window.clearTimeout(existingTimer);
+      roundTimersRef.current[round] = window.setTimeout(() => flushRound(round), 1200 / speedMultiplier);
+    };
+
+    const flushRound = (round: number) => {
+      const bucket = roundBucketsRef.current[round];
+      if (!bucket) return;
+      const timer = roundTimersRef.current[round];
+      if (timer) window.clearTimeout(timer);
+      delete roundTimersRef.current[round];
+      delete roundBucketsRef.current[round];
+
+      for (let i = 0; i < agentMetadata.length; i++) {
+        const msg = bucket[i];
+        if (msg) queueRef.current.push(msg);
+      }
+      processQueue();
+    };
+
+    const finalizeSummary = (payload: { conclusion: string; sources?: Source[] }) => {
+      setCurrentAct(3);
+      setModeratorSynthesis(payload.conclusion || "");
+      if (payload.sources) setCitedSources(payload.sources);
+      setIsAnalyzing(false);
+      setShowChat(false);
+    };
+
+    const computeDelayMs = (text: string) => {
+      const words = text.trim().split(/\s+/).filter(Boolean).length;
+      const base = (words * 60000) / Math.max(120, wpm);
+      const scaled = base / speedMultiplier;
+      return Math.min(8000, Math.max(650, Math.round(scaled)));
+    };
+
+    const processQueue = () => {
+      if (processingRef.current) return;
+      processingRef.current = true;
+
+      const step = () => {
+        const next = queueRef.current.shift();
+        if (!next) {
+          processingRef.current = false;
+          if (pendingSummaryRef.current) {
+            const payload = pendingSummaryRef.current;
+            pendingSummaryRef.current = null;
+            finalizeSummary(payload);
+          }
+          return;
+        }
+        setCurrentAct(2);
+        setActiveTypist(next.agentIdx);
+        const delay = computeDelayMs(next.content);
+        window.setTimeout(() => {
+          setActiveTypist(null);
+          setMessages((prev) => [
+            ...prev,
+            {
+              agentIdx: next.agentIdx,
+              content: next.content,
+              timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            },
+          ]);
+          window.setTimeout(step, 200 / speedMultiplier);
+        }, delay);
+      };
+
+      step();
+    };
 
     ws.onopen = () => {
+      ws.send(JSON.stringify({
+        topic: cleanTopic,
+        is_chaos_mode: !liveSource,
+        persona_mode: liveSource ? "sources" : "chaos"
+      }));
       setModeratorBrief(`Sourcing live context for: ${cleanTopic}...`);
     };
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       switch (data.type) {
-        case "brief": 
-          setModeratorBrief(data.content); 
+        case "overview": 
+          setModeratorBrief(data.overview || "Brief received.");
+          if (Array.isArray(data.sources)) setCitedSources(data.sources);
           break;
-        case "typing": 
-          setCurrentAct(2); 
-          setActiveTypist(data.agentIdx); 
+        case "turn": {
+          const speaker = String(data.speaker || "");
+          const agentIdx = speakerMap[speaker] ?? 0;
+          const round = Number(data.round ?? 0);
+          enqueueRound(round, agentIdx, data.text || "");
           break;
-        case "message":
-          setActiveTypist(null);
-          setMessages((prev) => [...prev, {
-            agentIdx: data.agentIdx, 
-            content: data.content,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          }]);
-          break;
-        case "synthesis":
-          setCurrentAct(3); 
-          setModeratorSynthesis(data.content);
-          if (data.sources) setCitedSources(data.sources);
-          setIsAnalyzing(false); 
-          setShowChat(false); 
+        }
+        case "summary":
+          if (processingRef.current || queueRef.current.length > 0) {
+            pendingSummaryRef.current = {
+              conclusion: data.conclusion || "",
+              sources: Array.isArray(data.sources) ? data.sources : undefined,
+            };
+          } else {
+            finalizeSummary({
+              conclusion: data.conclusion || "",
+              sources: Array.isArray(data.sources) ? data.sources : undefined,
+            });
+          }
           ws.close();
+          break;
+        case "error":
+          setBackendError(true);
+          setModeratorBrief(String(data.error || "Backend error"));
+          setIsAnalyzing(false);
           break;
       }
     };
@@ -491,7 +612,7 @@ export default function PunditProtocolPage() {
                 <Typewriter text={moderatorBrief} speedMs={BASE_TYPE_SPEED / speedMultiplier} />
               </p>
               
-              <AgentTelemetry isActive={currentAct === 1} speedMultiplier={speedMultiplier} hasError={backendError} />
+              <AgentTelemetry isActive={isAnalyzing} speedMultiplier={speedMultiplier} hasError={backendError} />
             </div>
           )}
 
@@ -517,17 +638,32 @@ export default function PunditProtocolPage() {
                       {messages.map((msg, idx) => {
                         const agent = agentMetadata[msg.agentIdx] || unknownAgent;
                         const isEven = idx % 2 === 0;
+                        const isExpanded = !!expandedMessages[idx];
+                        const shouldClamp = msg.content.length > MESSAGE_PREVIEW_CHARS;
+                        const shownText = isExpanded || !shouldClamp
+                          ? msg.content
+                          : `${msg.content.slice(0, MESSAGE_PREVIEW_CHARS).trimEnd()}…`;
                         return (
                           <div className={`flex items-start gap-3 mb-4 ${isEven ? "" : "flex-row-reverse"}`} key={idx}>
-                            <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center border-2 ${agent.color} ${agent.bg}`}>
+                            <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center border-2 ${agent.color} ${agent.bg}`}>
                               {renderAvatar(agent)}
                             </div>
-                            <div className={`min-w-0 max-w-xl rounded-2xl px-4 py-3 ${agent.bg} border ${agent.color} ${isEven ? 'rounded-tl-sm' : 'rounded-tr-sm'}`}>
+                            <div className={`min-w-0 max-w-xl rounded-2xl px-3 py-2 ${agent.bg} border ${agent.color} ${isEven ? 'rounded-tl-sm' : 'rounded-tr-sm'}`}>
                               <div className={`flex items-center gap-2 mb-1 ${isEven ? '' : 'flex-row-reverse'}`}>
-                                <span className={`text-xs font-semibold ${agent.text}`}>{agent.name}</span>
-                                <span className="text-xs text-zinc-500">{msg.timestamp}</span>
+                                <span className={`text-[11px] font-semibold ${agent.text}`}>{agent.name}</span>
+                                <span className="text-[10px] text-zinc-500">{msg.timestamp}</span>
                               </div>
-                              <div className="text-sm leading-relaxed">{msg.content}</div>
+                              <div className="text-[12px] leading-relaxed text-zinc-200">
+                                {shownText}
+                              </div>
+                              {shouldClamp && (
+                                <button
+                                  onClick={() => setExpandedMessages((prev) => ({ ...prev, [idx]: !isExpanded }))}
+                                  className="mt-1 text-[10px] font-semibold text-indigo-300 hover:text-indigo-200"
+                                >
+                                  {isExpanded ? "See less" : "See more..."}
+                                </button>
+                              )}
                             </div>
                           </div>
                         );

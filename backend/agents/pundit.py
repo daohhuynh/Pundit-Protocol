@@ -2,10 +2,19 @@ import json
 
 from uagents import Agent, Context, Bureau
 
-from ..services.debate_context import build_context_snippets
-from ..services.briefing import articles_from_json
-from .messages import Argument, DebateTurn
-from .personas import resolve_personality
+try:
+    from ..services.debate_context import build_context_snippets
+    from ..services.briefing import articles_from_json
+    from .messages import Argument, DebateTurn
+    from .personas import resolve_personality
+    from .local_resolver import LocalResolver
+except ImportError:
+    # Allow running from backend/ with non-package imports
+    from services.debate_context import build_context_snippets
+    from services.briefing import articles_from_json
+    from agents.messages import Argument, DebateTurn
+    from agents.personas import resolve_personality
+    from agents.local_resolver import LocalResolver
 
 PUNDIT_CONFIGS = [
     {
@@ -25,6 +34,8 @@ PUNDIT_CONFIGS = [
     },
 ]
 
+LOCAL_RESOLVER = LocalResolver(default_endpoint="http://127.0.0.1:8000/submit")
+
 
 def create_bureau() -> Bureau:
     bureau = Bureau(port=8001, endpoint=["http://127.0.0.1:8001/submit"])
@@ -33,6 +44,7 @@ def create_bureau() -> Bureau:
         pundit = Agent(
             name=config["name"],
             seed=config["seed"],
+            resolve=LOCAL_RESOLVER,
         )
 
         @pundit.on_event("startup")

@@ -6,9 +6,9 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-# Force load the .env file from the current directory
-env_path = Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=env_path)
+# Load backend/.env (one level above services/)
+BASE_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=BASE_DIR / ".env")
 
 NEWS_API_URL = os.getenv("NEWS_API_URL", "https://newsapi.org/v2/everything")
 

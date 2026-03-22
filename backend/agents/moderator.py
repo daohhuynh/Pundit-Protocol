@@ -5,6 +5,8 @@ from typing import Any
 
 from uagents import Agent, Context
 
+from .local_resolver import LocalResolver
+
 from .messages import Argument, DebateBrief, DebateTurn
 
 MODERATOR_SEED = "beachhacks_pundit_moderator_2026"
@@ -13,6 +15,7 @@ moderator = Agent(
     seed=MODERATOR_SEED,
     port=8000,
     endpoint=["http://127.0.0.1:8000/submit"],
+    resolve=LocalResolver(default_endpoint="http://127.0.0.1:8001/submit"),
 )
 
 PUNDIT_ADDRESSES = [

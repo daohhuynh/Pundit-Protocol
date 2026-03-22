@@ -1,4 +1,7 @@
-from chaos import ChaosEngine
+try:
+    from .chaos import ChaosEngine
+except ImportError:  # Allows running as a script: python backend/services/test.py
+    from chaos import ChaosEngine
 
 def main():
     # Toggle between "gemini" or "openai"

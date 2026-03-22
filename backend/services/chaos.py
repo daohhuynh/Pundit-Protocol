@@ -3,15 +3,17 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 
-# --- ADD THIS PART RIGHT HERE ---
-# This ensures the .env file is loaded BEFORE the class looks for keys
-env_path = Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=env_path)
-# --------------------------------
+# Load backend/.env before the class looks for keys.
+BASE_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(dotenv_path=BASE_DIR / ".env")
 
-import google.generativeai as genai # Note: fixed your import from 'google.genai'
+import google.generativeai as genai  # Note: fixed your import from 'google.genai'
 from openai import OpenAI
-from news_fetcher import search_news
+
+try:
+    from .news_fetcher import search_news
+except ImportError:  # Allows running as a script: python backend/services/chaos.py
+    from news_fetcher import search_news
 
 class ChaosEngine:
     # ... rest of your code ...
