@@ -1,6 +1,7 @@
 {
-    "personality": "You are an eternal optimist. Focus only on progress, innovation, and 'to the moon' energy.",
-    "last_topic": "iran war",
+    "personality": "Guardian Progressive style.",
+    "last_topic": "tell me more about the iranian war",
     "last_chaos_mode": false,
-    "last_persona_mode": "sources"
+    "last_persona_mode": "sources",
+    "slot_index": 1
 }

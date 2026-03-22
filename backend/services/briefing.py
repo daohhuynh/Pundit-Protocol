@@ -19,19 +19,16 @@ def fetch_articles_for_topic(topic: str, limit: int = 5) -> list[dict[str, Any]]
 
 
 def build_overview_from_articles(topic: str, articles: list[dict[str, Any]]) -> str:
-    """Deterministic overview string (no LLM) for POST/WS and moderator brief."""
+    """Returns a formatted list of live headlines for the debate context."""
     if not articles:
         return (
-            f"No live headlines retrieved for “{topic.strip()}”. "
-            "Pundits should reason from the topic and general knowledge."
+            f"No live headlines retrieved for '{topic.strip()}'. "
+            "Pundits will debate utilizing core systemic logic and historical context."
         )
-    lines = [
-        f"- {(a.get('title') or 'Untitled').strip()}" for a in articles[:5]
-    ]
-    return (
-        f"Topic: {topic.strip()}\n\n"
-        f"Recent headlines (shared brief):\n" + "\n".join(lines)
-    )
+        
+    # Instantly fallback to the list format, saving precious API tokens
+    lines = [f"• [{a.get('source', 'News')}] {(a.get('title') or 'Untitled').strip()}" for a in articles[:3]]
+    return f"LATEST INTEL ON '{topic.strip().upper()}':\n\n" + "\n".join(lines)
 
 
 def articles_to_json(articles: list[dict[str, Any]]) -> str:

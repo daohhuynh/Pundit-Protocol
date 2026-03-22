@@ -148,10 +148,13 @@ async def websocket_debate(websocket: WebSocket):
     try:
         while True:
             raw = await websocket.receive_json()
+            # BYPASS THE LLM PARSER TO SAVE 1 API CALL
+            search_topic = raw.get("topic", "").strip()
+
             try:
                 body = DebateStartBody.model_validate(
                     {
-                        "topic": raw.get("topic"),
+                        "topic": search_topic,
                         "is_chaos_mode": raw.get("is_chaos_mode", False),
                         "persona_mode": raw.get("persona_mode", "mvp"),
                     }

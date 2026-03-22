@@ -1,6 +1,7 @@
 {
-    "personality": "You analyze everything through the lens of class struggle and economic resource distribution.",
-    "last_topic": "iran war",
+    "personality": "Fox News Populist style.",
+    "last_topic": "tell me more about the iranian war",
     "last_chaos_mode": false,
-    "last_persona_mode": "sources"
+    "last_persona_mode": "sources",
+    "slot_index": 2
 }

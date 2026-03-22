@@ -1,12 +1,14 @@
-import json
 import os
+from dotenv import load_dotenv
+load_dotenv()
+import json
 import queue
+import asyncio
 from typing import Any
 
 from uagents import Agent, Context
 
 from .local_resolver import LocalResolver
-
 from .messages import Argument, DebateBrief, DebateTurn
 
 MODERATOR_SEED = "beachhacks_pundit_moderator_2026"
@@ -18,10 +20,11 @@ moderator = Agent(
     resolve=LocalResolver(default_endpoint="http://127.0.0.1:8001/submit"),
 )
 
+# Dynamically generate addresses from the seeds to prevent routing black holes
 PUNDIT_ADDRESSES = [
-    "agent1q2s3982hlxqn5mv60aw9lj5k9jqyf34t7sklaxrwy0dzzfvua5s5s2cx58c",
-    "agent1qggjtjmwxdlxv2k2a290fn3e4ke7787lgjgnn92rusv88tnd29k6udp0y57",
-    "agent1qt0twdy5lw6wfmj7dg2gpg5hg2q8lrz4c5uwgapqfprdtthvq0pmyts3ex9",
+    Agent(seed="pundit_contrarian_seed").address,
+    Agent(seed="pundit_hype_seed").address,
+    Agent(seed="pundit_materialist_seed").address,
 ]
 
 MAX_DEBATE_ROUNDS = max(1, int(os.getenv("DEBATE_ROUNDS", "2")))
@@ -29,13 +32,45 @@ MAX_DEBATE_ROUNDS = max(1, int(os.getenv("DEBATE_ROUNDS", "2")))
 # Single active debate (hackathon MVP).
 _debate_state: dict[str, Any] | None = None
 
+# Thread-safe bridge: FastAPI runs on the main event loop
+debate_queue: queue.Queue[dict] = queue.Queue()
 
-def _stub_conclusion(topic: str, history: list[dict[str, Any]]) -> str:
-    speakers = [h.get("speaker", "?") for h in history[-6:]]
-    return (
-        f"Synthesis for “{topic}”: the panel surfaced competing frames from {', '.join(speakers)}. "
-        "No single narrative dominated; readers should weigh evidence and incentives across rounds."
-    )
+
+async def _stub_conclusion(topic: str, history: list[dict[str, Any]]) -> str:
+    import os
+    import aiohttp
+    
+    prompt = f"""
+    You are an impartial, highly analytical moderator summarizing a debate on: {topic}.
+    Transcript: {json.dumps(history, indent=2)}
+    
+    Task: Write a single, nuanced paragraph synthesizing their conflicting arguments into a unified "truth protocol" summary. Highlight where they agreed and where they clashed. Do not take a side.
+    """
+    
+    api_key = os.getenv("GEMINI_API_KEY")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            # THE FIX: Give Synthesis 3 chances to succeed if Google rate limits it
+            for attempt in range(3):
+                async with session.post(url, json=payload) as resp:
+                    data = await resp.json()
+                    
+                    if "candidates" in data and data["candidates"]:
+                        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    elif "error" in data and data["error"].get("code") == 429:
+                        # Rate limited! Wait 5 seconds and try the synthesis again.
+                        print(f"Synthesis hit rate limit. Retrying in 5s... (Attempt {attempt + 1}/3)")
+                        await asyncio.sleep(5.0)
+                        continue
+                    else:
+                        return f"Synthesis Failed. API Response: {data}"
+                        
+            return "Synthesis Failed: Google API is too busy right now. Please wait 60 seconds."
+    except Exception as e:
+        return f"Synthesis Network Error: {str(e)}"
 
 
 async def _broadcast_round(ctx: Context, state: dict[str, Any]) -> None:
@@ -50,6 +85,8 @@ async def _broadcast_round(ctx: Context, state: dict[str, Any]) -> None:
         persona_mode=state["persona_mode"],
         source_personas_json=state["source_personas_json"],
     )
+    
+    # ALL 3 AGENTS STAY IN THE RING
     for addr in PUNDIT_ADDRESSES:
         await ctx.send(addr, turn)
 
@@ -57,19 +94,12 @@ async def _broadcast_round(ctx: Context, state: dict[str, Any]) -> None:
 @moderator.on_event("startup")
 async def introduce(ctx: Context):
     ctx.logger.info(f"Moderator is online at {moderator.address}")
-    ctx.logger.info(
-        "Almanac: uAgents registers this address with the resolver on startup when "
-        "network/ledger access is available; use Agentverse mailbox for remote discovery."
-    )
 
 
 @moderator.on_message(model=DebateBrief)
 async def handle_debate_brief(ctx: Context, sender: str, msg: DebateBrief):
     global _debate_state
     ctx.logger.info(f"New debate: {msg.topic} (mode={msg.persona_mode}, chaos={msg.is_chaos_mode})")
-    ctx.storage.set("last_topic", msg.topic)
-    ctx.storage.set("last_chaos_mode", msg.is_chaos_mode)
-    ctx.storage.set("last_persona_mode", msg.persona_mode)
 
     _debate_state = {
         "topic": msg.topic,
@@ -88,6 +118,7 @@ async def handle_debate_brief(ctx: Context, sender: str, msg: DebateBrief):
         sources = json.loads(msg.articles_json) if msg.articles_json else []
     except json.JSONDecodeError:
         sources = []
+        
     debate_queue.put(
         {
             "type": "overview",
@@ -105,7 +136,6 @@ async def handle_debate_brief(ctx: Context, sender: str, msg: DebateBrief):
 @moderator.on_message(model=Argument)
 async def collect_arguments(ctx: Context, sender: str, msg: Argument):
     global _debate_state
-    ctx.logger.info(f"Argument received from {msg.speaker} (round)")
     if _debate_state is None:
         return
 
@@ -127,6 +157,7 @@ async def collect_arguments(ctx: Context, sender: str, msg: Argument):
         }
     )
 
+    # WAITING FOR ALL 3 AGENTS
     if len(state["pending"]) < len(PUNDIT_ADDRESSES):
         return
 
@@ -134,7 +165,7 @@ async def collect_arguments(ctx: Context, sender: str, msg: Argument):
     state["pending"] = []
 
     if state["round_index"] >= state["max_rounds"]:
-        conclusion = _stub_conclusion(state["topic"], state["history"])
+        conclusion = await _stub_conclusion(state["topic"], state["history"])
         debate_queue.put(
             {
                 "type": "summary",
@@ -148,7 +179,3 @@ async def collect_arguments(ctx: Context, sender: str, msg: Argument):
 
     state["round_index"] += 1
     await _broadcast_round(ctx, state)
-
-
-# Thread-safe bridge: FastAPI runs on the main event loop; the moderator runs in a worker thread.
-debate_queue: queue.Queue[dict] = queue.Queue()

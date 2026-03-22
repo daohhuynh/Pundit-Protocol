@@ -28,36 +28,66 @@ interface QueuedMessage {
   content: string;
 }
 
-// --- Timing Engine ---
+// --- Config & Metadata ---
 const BASE_TYPE_SPEED = 15;
-const MESSAGE_PREVIEW_CHARS = 220;
+const MESSAGE_PREVIEW_CHARS = 500;
+
+const TRENDING_TOPICS = [
+  "AGI Timelines",
+  "Federal Reserve Rates",
+  "TikTok Divestment"
+];
+
+const agentMetadata: Agent[] = [
+  { name: "The Contrarian", color: "border-rose-500", bg: "bg-rose-900/20", text: "text-rose-400", logo: null, initials: "C" },
+  { name: "The Hype Man", color: "border-blue-500", bg: "bg-blue-900/20", text: "text-blue-400", logo: null, initials: "H" },
+  { name: "The Materialist", color: "border-emerald-500", bg: "bg-emerald-900/20", text: "text-emerald-400", logo: null, initials: "M" },
+];
+
+const unknownAgent: Agent = { name: "Independent", color: "border-zinc-500", bg: "bg-zinc-800/30", text: "text-zinc-300", logo: null, initials: "IND" };
 
 // --- Sub-Components ---
-const Typewriter = ({ text, speedMs }: { text: string; speedMs: number }) => {
+const Typewriter = ({
+  text,
+  speedMs,
+  isActive = true,
+  hasError = false,
+  onComplete
+}: {
+  text: string;
+  speedMs: number;
+  isActive?: boolean;
+  hasError?: boolean;
+  onComplete?: () => void;
+}) => {
   const [displayed, setDisplayed] = useState("");
 
   useEffect(() => {
+    if (hasError || !isActive) return;
+    
     if (!text) {
       setDisplayed("");
       return;
     }
     if (speedMs < 5) {
       setDisplayed(text);
+      if (onComplete) onComplete();
       return;
     }
 
     setDisplayed("");
     let i = 0;
     const interval = setInterval(() => {
-      setDisplayed((prev) => text.substring(0, i + 1));
+      setDisplayed(text.substring(0, i + 1));
       i++;
       if (i >= text.length) {
         clearInterval(interval);
+        if (onComplete) setTimeout(onComplete, 0);
       }
     }, speedMs);
 
     return () => clearInterval(interval);
-  }, [text, speedMs]);
+  }, [text, speedMs, hasError, isActive]);
 
   return <span>{displayed}</span>;
 };
@@ -66,8 +96,6 @@ const AgentTelemetry = ({ isActive, speedMultiplier, hasError }: { isActive: boo
   const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
-    if (!isActive) return;
-
     if (hasError) {
       setLogs((prev) => {
         const safe = prev.filter(Boolean);
@@ -78,6 +106,8 @@ const AgentTelemetry = ({ isActive, speedMultiplier, hasError }: { isActive: boo
       });
       return;
     }
+
+    if (!isActive) return;
 
     const sequence = [
       "INIT protocol::fetch_ai_swarm",
@@ -120,17 +150,16 @@ const AgentTelemetry = ({ isActive, speedMultiplier, hasError }: { isActive: boo
         <span className="text-zinc-500 font-bold uppercase tracking-widest text-[8px]">Agent Telemetry</span>
       </div>
       <div className="flex flex-col justify-end h-full pb-1">
-        {logs.map((log, idx) => {
-          if (!log) return null;
-          return (
+        {logs.map((log, idx) => (
+          log ? (
             <div key={idx} className="flex gap-3 animate-in fade-in slide-in-from-bottom-2 duration-200 mt-1.5">
               <span className="text-zinc-600 shrink-0">[{new Date().toISOString().split('T')[1].slice(0, 11)}]</span>
               <span className={log.includes("WARN") ? "text-amber-400" : log.includes("ERR") ? "text-red-400" : log.includes("OK") ? "text-emerald-400" : log.includes("SYSTEM") ? "text-indigo-400" : "text-zinc-300"}>
                 {log}
               </span>
             </div>
-          );
-        })}
+          ) : null
+        ))}
         {isActive && !hasError && (
           <div className="w-2 h-3 bg-zinc-400 animate-pulse mt-2 ml-24" />
         )}
@@ -139,21 +168,6 @@ const AgentTelemetry = ({ isActive, speedMultiplier, hasError }: { isActive: boo
   );
 };
 
-// --- Config ---
-const TRENDING_TOPICS = [
-  "AGI Timelines",
-  "Federal Reserve Rates",
-  "TikTok Divestment"
-];
-
-const agentMetadata: Agent[] = [
-  { name: "The Contrarian", color: "border-rose-500", bg: "bg-rose-900/20", text: "text-rose-400", logo: null, initials: "C" },
-  { name: "The Hype Man", color: "border-blue-500", bg: "bg-blue-900/20", text: "text-blue-400", logo: null, initials: "H" },
-  { name: "The Materialist", color: "border-emerald-500", bg: "bg-emerald-900/20", text: "text-emerald-400", logo: null, initials: "M" },
-];
-
-const unknownAgent: Agent = { name: "Independent", color: "border-zinc-500", bg: "bg-zinc-800/30", text: "text-zinc-300", logo: null, initials: "IND" };
-
 export default function PunditProtocolPage() {
   // --- UI & Content State ---
   const [topic, setTopic] = useState("");
@@ -161,7 +175,7 @@ export default function PunditProtocolPage() {
   const [backendError, setBackendError] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [currentAct, setCurrentAct] = useState<number>(0);
-  const [liveSource, setLiveSource] = useState(true); // True = News API, False = Backend Chaos Mock
+  const [liveSource, setLiveSource] = useState(true);
   const [speedMode, setSpeedMode] = useState<"realtime" | "demo">("realtime");
   const speedMultiplier = speedMode === "demo" ? 10 : 1;
 
@@ -171,7 +185,8 @@ export default function PunditProtocolPage() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [showChat, setShowChat] = useState(true);
   const [expandedMessages, setExpandedMessages] = useState<Record<number, boolean>>({});
-  
+
+  // --- Refs ---
   const searchInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const queueRef = useRef<QueuedMessage[]>([]);
@@ -179,6 +194,9 @@ export default function PunditProtocolPage() {
   const pendingSummaryRef = useRef<{ conclusion: string; sources?: Source[] } | null>(null);
   const roundBucketsRef = useRef<Record<number, Record<number, QueuedMessage>>>({});
   const roundTimersRef = useRef<Record<number, number>>({});
+  const wsRef = useRef<WebSocket | null>(null);
+  const isBriefingDoneRef = useRef(false);
+  const lastMessageContentRef = useRef<string>(""); // DYNAMIC TIMER TRACKER
 
   // Load Settings
   useEffect(() => {
@@ -234,13 +252,16 @@ export default function PunditProtocolPage() {
   const [citedSources, setCitedSources] = useState<Source[]>([]);
   const [activeTypist, setActiveTypist] = useState<number | null>(null);
 
+  // Auto-scroll chat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [messages, activeTypist]);
 
+  // Global Cleanup
   useEffect(() => {
     return () => {
       Object.values(roundTimersRef.current).forEach((id) => window.clearTimeout(id));
+      if (wsRef.current) wsRef.current.close();
     };
   }, []);
 
@@ -250,7 +271,7 @@ export default function PunditProtocolPage() {
     window.location.reload();
   };
 
-  // --- Core Execution Logic (100% Backend Connected) ---
+  // --- Core Execution Logic ---
   const triggerAnalysis = (query: string) => {
     const cleanTopic = query.trim();
     if (!cleanTopic) return;
@@ -264,6 +285,11 @@ export default function PunditProtocolPage() {
       return;
     }
     
+    // Clean up existing connection if user re-triggers
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+
     setTopic(cleanTopic);
     setInputError(""); 
     setBackendError(false); 
@@ -274,14 +300,20 @@ export default function PunditProtocolPage() {
     setActiveTypist(null);
     setShowChat(true);
     setExpandedMessages({});
+    
+    // Reset Refs
     queueRef.current = [];
     processingRef.current = false;
+    isBriefingDoneRef.current = false;
     pendingSummaryRef.current = null;
+    lastMessageContentRef.current = ""; // Reset tracker
     roundBucketsRef.current = {};
     Object.values(roundTimersRef.current).forEach((id) => window.clearTimeout(id));
     roundTimersRef.current = {};
 
-    const ws = new WebSocket(`ws://localhost:8080/ws/debate`);
+    const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8080/ws/debate";
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
 
     const speakerMap: Record<string, number> = {
       "The_Contrarian": 0,
@@ -309,6 +341,7 @@ export default function PunditProtocolPage() {
     const flushRound = (round: number) => {
       const bucket = roundBucketsRef.current[round];
       if (!bucket) return;
+      
       const timer = roundTimersRef.current[round];
       if (timer) window.clearTimeout(timer);
       delete roundTimersRef.current[round];
@@ -326,7 +359,18 @@ export default function PunditProtocolPage() {
       setModeratorSynthesis(payload.conclusion || "");
       if (payload.sources) setCitedSources(payload.sources);
       setIsAnalyzing(false);
-      setShowChat(false);
+      
+      // --- DYNAMIC COLLAPSE TIMER LOGIC ---
+      const lastMsg = lastMessageContentRef.current;
+      const wordCount = lastMsg.trim().split(/\s+/).filter(Boolean).length || 20; 
+      // (Words / 300 WPM) * 60,000 ms, scaled by Demo Mode multiplier so you aren't waiting forever
+      const readTimeMs = ((wordCount / 300) * 60000) / speedMultiplier;
+      
+      setTimeout(() => {
+        setShowChat(false);
+        // Smoothly scroll down to the synthesis box once the chat collapses
+        window.scrollBy({ top: 300, behavior: "smooth" });
+      }, Math.max(2000, readTimeMs)); // Ensure at least a 2 second delay just in case
     };
 
     const computeDelayMs = (text: string) => {
@@ -341,7 +385,13 @@ export default function PunditProtocolPage() {
       processingRef.current = true;
 
       const step = () => {
+        if (!isBriefingDoneRef.current) {
+          window.setTimeout(step, 200);
+          return;
+        }
+        
         const next = queueRef.current.shift();
+        
         if (!next) {
           processingRef.current = false;
           if (pendingSummaryRef.current) {
@@ -351,9 +401,14 @@ export default function PunditProtocolPage() {
           }
           return;
         }
+
+        // Save the content of the message we are about to display
+        lastMessageContentRef.current = next.content;
+
         setCurrentAct(2);
         setActiveTypist(next.agentIdx);
         const delay = computeDelayMs(next.content);
+        
         window.setTimeout(() => {
           setActiveTypist(null);
           setMessages((prev) => [
@@ -381,46 +436,59 @@ export default function PunditProtocolPage() {
     };
 
     ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      switch (data.type) {
-        case "overview": 
-          setModeratorBrief(data.overview || "Brief received.");
-          if (Array.isArray(data.sources)) setCitedSources(data.sources);
-          break;
-        case "turn": {
-          const speaker = String(data.speaker || "");
-          const agentIdx = speakerMap[speaker] ?? 0;
-          const round = Number(data.round ?? 0);
-          enqueueRound(round, agentIdx, data.text || "");
-          break;
-        }
-        case "summary":
-          if (processingRef.current || queueRef.current.length > 0) {
-            pendingSummaryRef.current = {
-              conclusion: data.conclusion || "",
-              sources: Array.isArray(data.sources) ? data.sources : undefined,
-            };
-          } else {
-            finalizeSummary({
-              conclusion: data.conclusion || "",
-              sources: Array.isArray(data.sources) ? data.sources : undefined,
-            });
+      try {
+        const data = JSON.parse(event.data);
+        switch (data.type) {
+          case "overview": 
+            setModeratorBrief(data.overview || "Brief received.");
+            if (Array.isArray(data.sources)) setCitedSources(data.sources);
+            break;
+          case "turn": {
+            const speaker = String(data.speaker || "");
+            const agentIdx = speakerMap[speaker] ?? 0;
+            const round = Number(data.round ?? 0);
+            enqueueRound(round, agentIdx, data.text || "");
+            break;
           }
-          ws.close();
-          break;
-        case "error":
-          setBackendError(true);
-          setModeratorBrief(String(data.error || "Backend error"));
-          setIsAnalyzing(false);
-          break;
+          case "summary":
+            if (processingRef.current || queueRef.current.length > 0) {
+              pendingSummaryRef.current = {
+                conclusion: data.conclusion || "",
+                sources: Array.isArray(data.sources) ? data.sources : undefined,
+              };
+            } else {
+              finalizeSummary({
+                conclusion: data.conclusion || "",
+                sources: Array.isArray(data.sources) ? data.sources : undefined,
+              });
+            }
+            ws.close();
+            break;
+          case "error":
+            setBackendError(true);
+            setModeratorBrief(String(data.error || "Backend error"));
+            setIsAnalyzing(false);
+            break;
+        }
+      } catch (err) {
+        console.error("Failed to parse WS message", err);
       }
     };
 
     ws.onerror = (err) => {
       console.error("WebSocket Error:", err);
-      setBackendError(true); 
+      setBackendError(true);
       setModeratorBrief("Network Error: Could not connect to the Backend Orchestrator.");
       setIsAnalyzing(false);
+    };
+
+    ws.onclose = (event) => {
+      if (!event.wasClean) {
+        console.error("WebSocket Dropped:", event.reason);
+        setBackendError(true);
+        setModeratorBrief("System Error: Backend connection dropped unexpectedly.");
+        setIsAnalyzing(false);
+      }
     };
   };
 
@@ -439,8 +507,7 @@ export default function PunditProtocolPage() {
 
   return (
     <div className={theme === "light" ? "invert hue-rotate-180" : ""}>
-      <main className={`relative min-h-screen w-full flex flex-col items-center transition-all duration-1000 p-0 overflow-x-hidden
-        ${!liveSource ? "bg-[#140202]" : "bg-zinc-950"} text-zinc-100 font-sans`}>
+      <main className={`relative min-h-screen w-full flex flex-col items-center transition-all duration-1000 p-0 overflow-x-hidden ${!liveSource ? "bg-[#140202]" : "bg-zinc-950"} text-zinc-100 font-sans`}>
         
         {/* --- Settings Modal Overlay --- */}
         {isSettingsOpen && (
@@ -502,11 +569,8 @@ export default function PunditProtocolPage() {
         </div>
 
         {/* Hero: Dynamic Flex Centering */}
-        <section className={`w-full max-w-2xl flex flex-col items-center px-4 transition-all duration-1000 ease-in-out
-          ${currentAct === 0 ? "flex-1 justify-center pb-24" : "pt-12 pb-8"}`}>
-          
-          <h1 className={`text-4xl md:text-5xl font-semibold mb-6 tracking-tight transition-all duration-700
-            ${currentAct === 0 ? "opacity-100 scale-100" : "opacity-0 scale-95 h-0 overflow-hidden"}`}>
+        <section className={`w-full max-w-2xl flex flex-col items-center px-4 transition-all duration-1000 ease-in-out ${currentAct === 0 ? "flex-1 justify-center pb-24" : "pt-12 pb-8"}`}>
+          <h1 className={`text-4xl md:text-5xl font-semibold mb-6 tracking-tight transition-all duration-700 ${currentAct === 0 ? "opacity-100 scale-100" : "opacity-0 scale-95 h-0 overflow-hidden"}`}>
             Out of the loop?
           </h1>
 
@@ -527,9 +591,7 @@ export default function PunditProtocolPage() {
           </div>
 
           <div className="w-full flex flex-col gap-2 relative z-10">
-            <form className={`w-full flex gap-2 rounded-2xl shadow-2xl border px-3 py-2.5 backdrop-blur-md transition-all duration-300
-              ${inputError ? "border-red-500 bg-red-950/20" : !liveSource ? "border-red-900/50 bg-red-950/10" : "border-zinc-800 bg-zinc-900/40"}`} 
-              onSubmit={handleFormSubmit}>
+            <form className={`w-full flex gap-2 rounded-2xl shadow-2xl border px-3 py-2.5 backdrop-blur-md transition-all duration-300 ${inputError ? "border-red-500 bg-red-950/20" : !liveSource ? "border-red-900/50 bg-red-950/10" : "border-zinc-800 bg-zinc-900/40"}`} onSubmit={handleFormSubmit}>
               <div className={`flex items-center pl-2 transition-colors ${inputError ? "text-red-400" : "text-zinc-500"}`}>
                 <FiSearch size={20} />
               </div>
@@ -547,9 +609,7 @@ export default function PunditProtocolPage() {
               <button
                 type="submit"
                 disabled={isAnalyzing || !topic.trim()}
-                className={`flex items-center justify-center w-28 h-11 rounded-xl font-medium transition-all transform active:scale-95
-                  ${inputError ? "bg-red-600 hover:bg-red-500 shadow-[0_0_15px_rgba(220,38,38,0.3)]" : !liveSource ? "bg-red-600 hover:bg-red-500 shadow-[0_0_15px_rgba(220,38,38,0.3)]" : "bg-indigo-600 hover:bg-indigo-500"} 
-                  text-white disabled:opacity-50`}
+                className={`flex items-center justify-center w-28 h-11 rounded-xl font-medium transition-all transform active:scale-95 ${inputError ? "bg-red-600 hover:bg-red-500 shadow-[0_0_15px_rgba(220,38,38,0.3)]" : !liveSource ? "bg-red-600 hover:bg-red-500 shadow-[0_0_15px_rgba(220,38,38,0.3)]" : "bg-indigo-600 hover:bg-indigo-500"} text-white disabled:opacity-50`}
               >
                 {isAnalyzing ? (
                   <div className="flex gap-1.5 items-center justify-center">
@@ -575,8 +635,7 @@ export default function PunditProtocolPage() {
               <span className="uppercase tracking-widest text-[10px] font-bold text-zinc-500">Source</span>
               <button
                 type="button"
-                className={`transition-all flex items-center gap-2 px-3 py-1.5 rounded-full border shadow-inner
-                  ${liveSource ? "border-blue-500/20 bg-blue-900/10" : "border-red-500/50 bg-red-950/20"}`}
+                className={`transition-all flex items-center gap-2 px-3 py-1.5 rounded-full border shadow-inner ${liveSource ? "border-blue-500/20 bg-blue-900/10" : "border-red-500/50 bg-red-950/20"}`}
                 onClick={() => setLiveSource((v) => !v)}
               >
                 <span className={`w-2 h-2 rounded-full ${liveSource ? "bg-blue-400" : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]"}`}></span>
@@ -590,8 +649,7 @@ export default function PunditProtocolPage() {
               <span className="uppercase tracking-widest text-[10px] font-bold text-zinc-500">Pacing</span>
               <button
                 type="button"
-                className={`transition-all flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800 shadow-inner 
-                  ${speedMode === "demo" ? "border-amber-500/30 bg-amber-900/10" : ""}`}
+                className={`transition-all flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-900 border border-zinc-800 shadow-inner ${speedMode === "demo" ? "border-amber-500/30 bg-amber-900/10" : ""}`}
                 onClick={() => setSpeedMode(p => p === "demo" ? "realtime" : "demo")}
               >
                 <span className={`w-2 h-2 rounded-full ${speedMode === "demo" ? "bg-amber-400" : "bg-zinc-600"}`}></span>
@@ -609,9 +667,8 @@ export default function PunditProtocolPage() {
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-700 w-full bg-zinc-900/30 border border-zinc-800/50 rounded-2xl p-6 flex flex-col gap-3">
               <span className="font-mono text-[10px] font-bold uppercase text-blue-400 tracking-widest">Briefing & Spin-Up</span>
               <p className="text-md text-zinc-300 leading-relaxed min-h-[3rem]">
-                <Typewriter text={moderatorBrief} speedMs={BASE_TYPE_SPEED / speedMultiplier} />
+              <Typewriter text={moderatorBrief} speedMs={BASE_TYPE_SPEED / speedMultiplier} hasError={backendError} onComplete={() => { isBriefingDoneRef.current = true; }} />
               </p>
-              
               <AgentTelemetry isActive={isAnalyzing} speedMultiplier={speedMultiplier} hasError={backendError} />
             </div>
           )}
@@ -624,9 +681,7 @@ export default function PunditProtocolPage() {
                   <span className="font-mono text-[10px] font-bold uppercase text-red-400 tracking-widest">Debate</span>
                   <div className="ml-auto flex items-center gap-3">
                     <span className="text-[10px] font-mono tracking-widest hidden sm:block text-zinc-500">Press F</span>
-                    <button
-                      className={`px-3 py-1 text-xs rounded-lg transition border border-zinc-800 font-medium ${showChat ? "bg-zinc-800 text-zinc-300 hover:bg-zinc-700" : "bg-zinc-900 text-zinc-500 hover:bg-zinc-800"}`}
-                    >
+                    <button className={`px-3 py-1 text-xs rounded-lg transition border border-zinc-800 font-medium ${showChat ? "bg-zinc-800 text-zinc-300 hover:bg-zinc-700" : "bg-zinc-900 text-zinc-500 hover:bg-zinc-800"}`}>
                       {showChat ? "Collapse" : "Expand"}
                     </button>
                   </div>
@@ -688,14 +743,14 @@ export default function PunditProtocolPage() {
 
           {currentAct >= 3 && (
             <div className="animate-in fade-in zoom-in-95 duration-700 w-full bg-zinc-900/40 border border-zinc-800 rounded-2xl p-8 flex flex-col gap-4">
-              <span className="font-mono text-[10px] font-bold uppercase text-green-400 tracking-widest">Synthesis</span>
+             <span className="font-mono text-[10px] font-bold uppercase text-green-400 tracking-widest">Synthesis</span>
               <p className="text-md text-zinc-200 leading-relaxed">
                 <Typewriter text={moderatorSynthesis} speedMs={BASE_TYPE_SPEED / speedMultiplier} />
               </p>
               {citedSources.length > 0 && (
                 <div className="flex flex-wrap gap-2 mt-2">
                   {citedSources.map((src, i) => (
-                    <a key={i} href={src.url} target="_blank" className="text-[10px] font-mono text-zinc-500 hover:text-indigo-400 transition-colors bg-zinc-950/50 px-2 py-1 rounded border border-zinc-800">
+                    <a key={i} href={src.url} target="_blank" rel="noopener noreferrer" className="text-[10px] font-mono text-zinc-500 hover:text-indigo-400 transition-colors bg-zinc-950/50 px-2 py-1 rounded border border-zinc-800">
                       {src.title}
                     </a>
                   ))}
