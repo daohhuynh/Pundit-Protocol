@@ -1,54 +1,37 @@
 # Pundit Protocol
 
-An asynchronous, multi-agent orchestration engine that ingests real-time news data and generates autonomous, multi-perspective debate telemetry.
+**Asynchronous multi-agent orchestration and real-time telemetry streaming.**
 
-## System Architecture
+Pundit Protocol is a distributed, multi-agent debate engine designed to ingest real-time news data and synthesize multi-perspective LLM arguments. It demonstrates advanced handling of asynchronous cross-runtime communication, unidirectional WebSocket streaming, and mutex-locked React DOM manipulation. 
 
-Pundit Protocol is built on a distributed agent architecture, decoupling the client-facing WebSocket streams from the internal agent processing matrix.
+## Decoupled Architecture & IPC Boundary
 
-* **The Orchestrator (FastAPI):** Manages the WebSocket connections and acts as a thread-safe bridge between the HTTP layer and the autonomous agent bureau.
-* **The Swarm (Fetch.ai uAgents):** A concurrent execution environment where specialized agents (Moderator, Contrarian, Hype Man, Materialist) operate on isolated logical loops.
-* **The Intelligence (Gemini 2.5 Flash):** Handles high-speed argument generation and multi-variable context synthesis.
-* **The Context Engine (NewsAPI):** Provides real-time, domain-specific data grounding to prevent LLM hallucination during active debate rounds.
+The system physically isolates the client UI, the HTTP orchestration layer, and the multi-agent reasoning environment, relying on a strict Inter-Process Communication (IPC) pipeline.
 
-## Key Technical Implementations
+* **WebSocket Primary Transport:** The Next.js client maintains a persistent, stateful WebSocket connection (`/ws/debate`) to the FastAPI backend, receiving a continuous stream of typed event frames (overview, turn, summary, error) rather than relying on synchronous HTTP polling.
+* **Cross-Runtime Bridging:** The architecture must bridge FastAPI's `async` event loop with the synchronous Fetch.ai uAgents runtime. This is achieved by spawning isolated daemon threads for the agents and passing telemetry via a thread-safe `queue.Queue`. The FastAPI layer utilizes `asyncio.to_thread()` to non-blockingly await queue pulls, preventing the high-frequency WS server from stalling during agent generation.
+* **Static Latency Optimization:** The agents bypass the external Fetch.ai Almanac registry entirely. By hardcoding local resolver endpoints (`127.0.0.1:8000`), the system eliminates DNS resolution latency and external network hops on the critical agent-to-agent message bus.
 
-### 1. Asynchronous Message Passing & Event Queues
-To prevent WebSocket blocking during heavy LLM generation, the system utilizes a thread-safe queue.Queue to pass state between the synchronous FastAPI runtime and the asynchronous uAgents environment. The FastAPI server runs on port 8080 while the internal bureau communicates via local resolvers on port 8001.
+## Asynchronous State & DOM Thrashing Prevention
 
-### 2. Fault Tolerance & Rate Limit Mitigation
-Big Tech APIs throttle under rapid multi-agent spin-ups. The Moderator agent implements a robust exponential backoff and retry mechanism. If the Synthesis node hits a 429 Resource Exhausted error from the Google API, the system traps the error, initiates a 5-second cooldown, and automatically re-executes the network request.
+Standard global state libraries (Redux, Zustand) trigger full component re-renders, causing catastrophic DOM thrashing and UI lockups when hydrating high-frequency WebSocket streams. This frontend drops external state managers entirely in favor of highly optimized `useRef` boundaries.
 
-### 3. Dynamic Telemetry & UI State Management
-The Next.js frontend is optimized for low-latency streaming. To handle the rapid influx of WebSocket packets without thrashing the React DOM, the application relies heavily on useRef for queuing messages (queueRef), managing typing states (activeTypist), and tracking asynchronous round timeouts (roundTimersRef). This ensures the UI remains non-blocking even during heavy data hydration.
+* **Mutex-Locked Queue Drain:** The incoming WebSocket stream dumps directly into a `useRef` queue. A recursive `setTimeout` loop drains this queue sequentially. A boolean `processingRef` acts as a strict mutex lock—if the drain function is called while already executing, it terminates immediately, serializing all DOM writes.
+* **Round-Bucketing Synchronization:** Because the three backend LLM agents process concurrently, their responses arrive out of order. The frontend implements a "Round-Bucketing" pattern, holding incoming turns in `roundBucketsRef`. A flush to the DOM is only triggered when a strict consensus is reached (all agents have responded) or a hard 1200ms timeout is hit, ensuring chronological UI integrity.
+* **Typewriter Briefing Gate:** A purely client-side rendering gate (`isBriefingDoneRef`) blocks the primary queue drain loop, polling every 200ms until the initial context briefing animation completes.
 
-### 4. Deterministic Persona Routing
-Agent behavior is strictly governed by a configuration matrix (personas.py). Depending on the runtime parameters, agents dynamically hot-swap their base prompts between "MVP", "Sources", or "Chaos" modes before generating content, ensuring systemic alignment without requiring hard reboots of the agent nodes.
+## AI Orchestration & Fault Tolerance
 
-## Tech Stack
-* **Frontend:** Next.js, React 18, Tailwind CSS, TypeScript
-* **Backend:** Python 3.10+, FastAPI, Uvicorn
-* **Agent Framework:** Fetch.ai uAgents
-* **External APIs:** Google Gemini (LLM), NewsAPI (Data grounding)
+LLM endpoints are notoriously unstable under concurrent load. The system implements asymmetric fault tolerance and defensive API routing to prevent cascading system failures.
 
-## Local Execution Protocol
+* **Staggered Dispatch Heuristic:** To prevent immediate HTTP 429 (Resource Exhausted) errors when three agents hit the Gemini 2.5 Flash API simultaneously, the dispatch layer implements a manual token-bucket avoidance stagger. Agents are subjected to hardcoded `asyncio.sleep` delays (0s, 2.5s, 5.0s) to feather the concurrent API load.
+* **Asymmetric Retry Logic:** Individual pundit turns operate on a strict SLA; if the Gemini POST request fails, the system catches the exception and injects a deterministic fallback string rather than retrying, maintaining debate momentum. However, the final `_stub_conclusion` synthesis applies a rigid 3-attempt linear backoff (5.0s delay) specifically targeting HTTP 429 errors.
+* **Graceful Context Degradation:** If the upstream NewsAPI fails to return context grounding (e.g., network timeout), the orchestration layer catches the `RequestException` and degrades gracefully, returning an empty article list and generating a fallback overview rather than throwing an HTTP 500.
+* **Dual-LLM Governance (ChaosEngine):** For experimental agent configurations, the architecture supports a two-tier LLM pipeline: Gemini generates the raw debate content, which is then piped to a `gpt-4o-mini` instance acting strictly as a safety and relevance governor, returning a deterministic boolean flag before the payload is allowed to broadcast.
 
-### Prerequisites
-Ensure you have Python 3.10+ and Node.js installed. You will need API keys for Google Gemini and NewsAPI.
+## Throughput & Execution Constraints
 
-### 1. Clone and Configure
-`git clone https://github.com/YOUR_USERNAME/pundit-protocol.git`
-`cd pundit-protocol`
-
-### 2. Backend Spin-Up
-Create a .env file in the ./backend directory with GEMINI_API_KEY and NEWS_API_KEY.
-`cd backend`
-`pip install -r requirements.txt`
-`uvicorn main:app --reload --port 8080`
-
-### 3. Frontend Spin-Up
-`cd frontend`
-`npm install`
-`npm run dev`
-
-The application will be accessible at http://localhost:3000.
+The backend enforces strict numerical boundaries to guarantee system stability:
+* **Context Windows:** Pre-processing truncates NewsAPI context strictly at 1,500 characters max, capping at 5 articles to prevent LLM prompt bloat and context-window degradation.
+* **Execution Timeouts:** The main `queue.get()` bridge enforces a 120-second timeout (`DEBATE_QUEUE_TIMEOUT`). If the agentic swarm fails to yield an event within this window, the backend gracefully closes the WebSocket with an error frame.
+* **LLM Output Clamping:** Client-side rendering clamps agent outputs over 500 characters, requiring manual UI expansion to limit initial DOM paint costs for massive LLM generations.
